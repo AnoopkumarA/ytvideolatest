@@ -19,6 +19,15 @@ app.use('/downloads', express.static(path.join(process.cwd(), 'downloads'), { in
 
 // In-memory progress state for SSE
 const progressStates = new Map();
+// Cleanup any debug watch files that may exist so they never get served or deployed
+try {
+  const root = process.cwd();
+  for (const name of fs.readdirSync(root)) {
+    if (/-watch\.html$/i.test(name)) {
+      try { fs.unlinkSync(path.join(root, name)); } catch {}
+    }
+  }
+} catch {}
 function initProgress(id) {
   if (!id) return;
   progressStates.set(id, { status: 'starting', percent: 0, etaSeconds: null, startedAt: Date.now() });
