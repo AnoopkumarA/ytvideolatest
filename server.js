@@ -275,12 +275,89 @@ app.post('/api/download', async (req, res) => {
       return res.status(400).json({ error: 'Invalid URL' });
     }
     if (progressId) initProgress(progressId);
+    
     try {
-      const out = await downloadWithYtDlpStreaming(url, { audioOnly: false, progressId });
-      return res.json(out);
-    } catch (err) {
-      if (progressId) finishProgress(progressId, false, { error: err.message });
-      return res.status(500).json({ error: err.message });
+      const info = await ytdl.getInfo(url, { requestOptions: { headers: DEFAULT_HEADERS } });
+    const title = info.videoDetails.title.replace(/[<>:"/\\|?*]/g, '_');
+    const id = info.videoDetails.videoId;
+    const filename = `${title}-${id}.mp4`;
+    const outDir = path.join(process.cwd(), 'downloads');
+    ensureDir(outDir);
+    const outPath = path.join(outDir, filename);
+
+    const write = fs.createWriteStream(outPath);
+    const stream = ytdl(url, {
+      filter: 'audioandvideo',
+      quality: 'highest',
+        dlChunkSize: 0,
+        highWaterMark: 1 << 26,
+      requestOptions: { headers: DEFAULT_HEADERS },
+      range: { start: 0 },
+      begin: '0s',
+    });
+
+      if (progressId) {
+        const startedAt = Date.now();
+        stream.on('progress', (_chunkLen, downloaded, total) => {
+          const elapsed = Math.max(0.001, (Date.now() - startedAt) / 1000);
+          const speed = downloaded / elapsed; // bytes per second
+          const remaining = Math.max(0, total - downloaded);
+          const etaSeconds = speed > 0 ? Math.round(remaining / speed) : null;
+          const percent = total ? (downloaded / total) * 100 : 0;
+          setProgress(progressId, { status: 'downloading', percent, etaSeconds });
+        });
+      }
+
+      let responded = false;
+      const finalize = (statusCode, payload) => {
+        if (responded) return;
+        responded = true;
+        res.status(statusCode).json(payload);
+      };
+
+      stream.on('error', async (err) => {
+        if (responded) return;
+        try {
+          const fallback = progressId
+            ? await downloadWithYtDlpStreaming(url, { audioOnly: false, progressId })
+            : await downloadWithYtDlp(url, { audioOnly: false });
+          finalize(200, fallback);
+        } catch (fallbackErr) {
+          if (progressId) finishProgress(progressId, false);
+          finalize(500, { error: `Download failed: ${err.message}; yt-dlp fallback failed: ${fallbackErr.message}` });
+        }
+      });
+
+      write.on('finish', () => {
+        if (progressId) finishProgress(progressId, true, { file: filename });
+        finalize(200, { path: outPath, filename, url: `/downloads/${encodeURIComponent(filename)}` });
+      });
+
+      write.on('error', async (err) => {
+        if (responded) return;
+        try {
+          const fallback = progressId
+            ? await downloadWithYtDlpStreaming(url, { audioOnly: false, progressId })
+            : await downloadWithYtDlp(url, { audioOnly: false });
+          finalize(200, fallback);
+        } catch (fallbackErr) {
+          if (progressId) finishProgress(progressId, false, { error: err.message });
+          finalize(500, { error: `File write failed: ${err.message}; yt-dlp fallback failed: ${fallbackErr.message}` });
+        }
+      });
+
+      stream.pipe(write);
+    } catch (infoError) {
+      try {
+        const fallback = req.body?.progressId
+          ? await downloadWithYtDlpStreaming(url, { audioOnly: false, progressId: req.body.progressId })
+          : await downloadWithYtDlp(url, { audioOnly: false });
+        return res.json(fallback);
+      } catch (fallbackErr) {
+        console.error('Error getting video info:', infoError.message);
+        if (req.body?.progressId) finishProgress(req.body.progressId, false, { error: infoError.message });
+        return res.status(500).json({ error: `Failed to get video info: ${infoError.message}; yt-dlp fallback failed: ${fallbackErr.message}` });
+      }
     }
   } catch (e) {
     console.error('General error:', e.message);
@@ -317,11 +394,69 @@ app.post('/api/download-mp3', async (req, res) => {
     }
     if (progressId) initProgress(progressId);
     try {
-      const out = await downloadWithYtDlpStreaming(url, { audioOnly: true, bitrateKbps: bitrate, progressId });
-      return res.json(out);
-    } catch (err) {
-      if (progressId) finishProgress(progressId, false, { error: err.message });
-      return res.status(500).json({ error: err.message });
+    const info = await ytdl.getInfo(url, { requestOptions: { headers: DEFAULT_HEADERS } });
+    const title = info.videoDetails.title.replace(/[<>:"/\\|?*]/g, '_');
+    const id = info.videoDetails.videoId;
+    const filename = `${title}-${id}.mp3`;
+    const outDir = path.join(process.cwd(), 'downloads');
+    ensureDir(outDir);
+    const outPath = path.join(outDir, filename);
+
+    const audioStream = ytdl(url, {
+      filter: 'audioonly',
+      quality: 'highestaudio',
+      dlChunkSize: 0,
+      highWaterMark: 1 << 26,
+      requestOptions: { headers: DEFAULT_HEADERS },
+      range: { start: 0 },
+      begin: '0s',
+    });
+
+      if (progressId) {
+        const startedAt = Date.now();
+        audioStream.on('progress', (_chunkLen, downloaded, total) => {
+          const elapsed = Math.max(0.001, (Date.now() - startedAt) / 1000);
+          const speed = downloaded / elapsed;
+          const remaining = Math.max(0, total - downloaded);
+          const etaSeconds = speed > 0 ? Math.round(remaining / speed) : null;
+          const percent = total ? (downloaded / total) * 100 : 0;
+          setProgress(progressId, { status: 'downloading', percent, etaSeconds });
+        });
+      }
+
+    ffmpeg(audioStream)
+      .audioCodec('libmp3lame')
+      .audioBitrate(String(bitrate))
+      .format('mp3')
+      .outputOptions(['-threads 0'])
+        .on('error', async (err) => {
+          try {
+            const fallback = progressId
+              ? await downloadWithYtDlpStreaming(url, { audioOnly: true, bitrateKbps: bitrate, progressId })
+              : await downloadWithYtDlp(url, { audioOnly: true, bitrateKbps: bitrate });
+            if (progressId) finishProgress(progressId, true, { file: fallback.filename });
+            res.json(fallback);
+          } catch (fallbackErr) {
+            if (progressId) finishProgress(progressId, false, { error: fallbackErr.message || err.message });
+            res.status(500).json({ error: fallbackErr.message || err.message });
+          }
+        })
+        .on('end', () => {
+          if (progressId) finishProgress(progressId, true, { file: filename });
+          res.json({ path: outPath, filename, url: `/downloads/${encodeURIComponent(filename)}` })
+        })
+      .save(outPath);
+    } catch (infoError) {
+      try {
+        const fallback = req.body?.progressId
+          ? await downloadWithYtDlpStreaming(url, { audioOnly: true, bitrateKbps: bitrate, progressId: req.body.progressId })
+          : await downloadWithYtDlp(url, { audioOnly: true, bitrateKbps: bitrate });
+        if (req.body?.progressId) finishProgress(req.body.progressId, true);
+        return res.json(fallback);
+      } catch (fallbackErr) {
+        if (req.body?.progressId) finishProgress(req.body.progressId, false);
+        return res.status(500).json({ error: `Failed to get video info: ${infoError.message}; yt-dlp fallback failed: ${fallbackErr.message}` });
+      }
     }
   } catch (e) {
     res.status(500).json({ error: e.message });
