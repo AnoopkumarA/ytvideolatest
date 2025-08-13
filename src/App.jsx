@@ -48,16 +48,48 @@ function SseProgress({ id, forceComplete }) {
   React.useEffect(() => {
     if (!id) return
     const origin = (typeof window !== 'undefined' && window.location && window.location.port === '5177') ? 'http://localhost:5174' : ''
-    const src = new EventSource(`${origin}/api/progress/${id}`)
-    src.onmessage = (ev) => {
-      try {
-        const data = JSON.parse(ev.data)
-        if (typeof data.percent === 'number') setServerPercent(Math.max(0, Math.min(100, data.percent)))
-        if (typeof data.etaSeconds === 'number') setEtaSeconds(Math.max(0, data.etaSeconds))
-      } catch {}
+    let usePolling = false
+    let src
+    try {
+      src = new EventSource(`${origin}/api/progress/${id}`)
+      src.onmessage = (ev) => {
+        try {
+          const data = JSON.parse(ev.data)
+          if (typeof data.percent === 'number') setServerPercent(Math.max(0, Math.min(100, data.percent)))
+          if (typeof data.etaSeconds === 'number') setEtaSeconds(Math.max(0, data.etaSeconds))
+        } catch {}
+      }
+      src.onerror = () => {
+        usePolling = true
+        try { src.close() } catch {}
+      }
+    } catch {
+      usePolling = true
     }
-    src.onerror = () => { try { src.close() } catch {} }
-    return () => { try { src.close() } catch {} }
+
+    let pollTimer
+    const startPolling = () => {
+      const fetchOnce = async () => {
+        try {
+          const r = await fetch(`${origin}/api/progress/${id}/json`, { cache: 'no-store' })
+          const data = await r.json()
+          if (typeof data.percent === 'number') setServerPercent(Math.max(0, Math.min(100, data.percent)))
+          if (typeof data.etaSeconds === 'number') setEtaSeconds(Math.max(0, data.etaSeconds))
+          if (data.status === 'done' || data.status === 'error') return
+          pollTimer = setTimeout(fetchOnce, 1000)
+        } catch {
+          pollTimer = setTimeout(fetchOnce, 1500)
+        }
+      }
+      fetchOnce()
+    }
+
+    if (usePolling) startPolling()
+
+    return () => {
+      try { src && src.close() } catch {}
+      if (pollTimer) clearTimeout(pollTimer)
+    }
   }, [id])
 
   const fallbackPercent = Math.min(100, (elapsed / maxDurationMs) * 100)

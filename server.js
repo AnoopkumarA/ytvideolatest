@@ -69,6 +69,14 @@ app.get('/api/progress/:id', (req, res) => {
   req.on('close', () => { clearInterval(timer); });
 });
 
+// JSON polling fallback for environments that don't support SSE
+app.get('/api/progress/:id/json', (req, res) => {
+  const { id } = req.params;
+  const state = progressStates.get(id) || { status: 'unknown' };
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(state);
+});
+
 const DEFAULT_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
