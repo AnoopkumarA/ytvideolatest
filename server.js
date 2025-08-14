@@ -7,6 +7,33 @@ const ffmpegPath = require('ffmpeg-static');
 const ffmpeg = require('fluent-ffmpeg');
 const { spawn } = require('child_process');
 
+// S3 configuration (optional - falls back to local storage if not configured)
+const S3_CONFIG = {
+  enabled: process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY && process.env.AWS_S3_BUCKET,
+  bucket: process.env.AWS_S3_BUCKET,
+  region: process.env.AWS_REGION || 'us-east-1',
+  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+};
+
+// Initialize S3 client if configured
+let s3Client = null;
+if (S3_CONFIG.enabled) {
+  try {
+    const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+    s3Client = new S3Client({
+      region: S3_CONFIG.region,
+      credentials: {
+        accessKeyId: S3_CONFIG.accessKeyId,
+        secretAccessKey: S3_CONFIG.secretAccessKey,
+      },
+    });
+  } catch (err) {
+    console.warn('S3 client not available, falling back to local storage:', err.message);
+    S3_CONFIG.enabled = false;
+  }
+}
+
 if (ffmpegPath) {
   ffmpeg.setFfmpegPath(ffmpegPath);
 }
@@ -192,10 +219,14 @@ async function downloadWithYtDlp(url, { audioOnly = false, bitrateKbps = 192 } =
   if (!resolvedPath || !fs.existsSync(resolvedPath)) {
     throw new Error('yt-dlp finished but output file could not be determined');
   }
+  
+  const filename = path.basename(resolvedPath);
+  const fileUrl = await getFileUrl(resolvedPath, filename);
+  
   return {
     path: resolvedPath,
-    filename: path.basename(resolvedPath),
-    url: `/downloads/${encodeURIComponent(path.basename(resolvedPath))}`,
+    filename,
+    url: fileUrl,
   };
 }
 
@@ -276,6 +307,46 @@ async function downloadWithYtDlpStreaming(url, { audioOnly = false, bitrateKbps 
   return { path: resolvedPath, filename: path.basename(resolvedPath), url: `/downloads/${encodeURIComponent(path.basename(resolvedPath))}` };
 }
 
+// Helper function to upload file to S3 or return local path
+async function getFileUrl(filePath, filename) {
+  if (!S3_CONFIG.enabled || !s3Client) {
+    // Fallback to local storage
+    return `/downloads/${encodeURIComponent(filename)}`;
+  }
+
+  try {
+    const fileStream = fs.createReadStream(filePath);
+    const { PutObjectCommand } = require('@aws-sdk/client-s3');
+    
+    const uploadParams = {
+      Bucket: S3_CONFIG.bucket,
+      Key: `downloads/${filename}`,
+      Body: fileStream,
+      ContentType: filename.endsWith('.mp4') ? 'video/mp4' : 'audio/mpeg',
+      ACL: 'public-read',
+    };
+
+    await s3Client.send(new PutObjectCommand(uploadParams));
+    
+    // Return S3 public URL
+    const s3Url = `https://${S3_CONFIG.bucket}.s3.${S3_CONFIG.region}.amazonaws.com/downloads/${encodeURIComponent(filename)}`;
+    
+    // Optionally delete local file after S3 upload
+    if (process.env.CLEANUP_LOCAL_FILES === 'true') {
+      try {
+        fs.unlinkSync(filePath);
+      } catch (err) {
+        console.warn('Failed to cleanup local file:', err.message);
+      }
+    }
+    
+    return s3Url;
+  } catch (err) {
+    console.error('S3 upload failed, falling back to local:', err.message);
+    return `/downloads/${encodeURIComponent(filename)}`;
+  }
+}
+
 app.post('/api/download', async (req, res) => {
   try {
     const { url, progressId } = req.body || {};
@@ -336,9 +407,10 @@ app.post('/api/download', async (req, res) => {
         }
       });
 
-      write.on('finish', () => {
+      write.on('finish', async () => {
         if (progressId) finishProgress(progressId, true, { file: filename });
-        finalize(200, { path: outPath, filename, url: `/downloads/${encodeURIComponent(filename)}` });
+        const fileUrl = await getFileUrl(outPath, filename);
+        finalize(200, { path: outPath, filename, url: fileUrl });
       });
 
       write.on('error', async (err) => {
@@ -442,16 +514,17 @@ app.post('/api/download-mp3', async (req, res) => {
             const fallback = progressId
               ? await downloadWithYtDlpStreaming(url, { audioOnly: true, bitrateKbps: bitrate, progressId })
               : await downloadWithYtDlp(url, { audioOnly: true, bitrateKbps: bitrate });
-            if (progressId) finishProgress(progressId, true, { file: fallback.filename });
+            if (progressId) finishProgress(progressId, true, { file: filename });
             res.json(fallback);
           } catch (fallbackErr) {
             if (progressId) finishProgress(progressId, false, { error: fallbackErr.message || err.message });
             res.status(500).json({ error: fallbackErr.message || err.message });
           }
         })
-        .on('end', () => {
+        .on('end', async () => {
           if (progressId) finishProgress(progressId, true, { file: filename });
-          res.json({ path: outPath, filename, url: `/downloads/${encodeURIComponent(filename)}` })
+          const fileUrl = await getFileUrl(outPath, filename);
+          res.json({ path: outPath, filename, url: fileUrl })
         })
       .save(outPath);
     } catch (infoError) {

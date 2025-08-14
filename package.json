@@ -26,7 +26,8 @@
     "inquirer": "^8.2.5",
     "ora": "^5.4.1",
     "postcss": "^8.5.6",
-    "react-router-dom": "^7.8.0"
+    "react-router-dom": "^7.8.0",
+    "@aws-sdk/client-s3": "^3.0.0"
   },
   "bin": {
     "ytvideo": "app.js"
