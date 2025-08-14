@@ -47,7 +47,9 @@ function SseProgress({ id, forceComplete }) {
 
   React.useEffect(() => {
     if (!id) return
-    const origin = (typeof window !== 'undefined' && window.location && window.location.port === '5177') ? 'http://localhost:5174' : ''
+    // Use absolute backend origin in dev to avoid proxy flakiness
+    const origin = import.meta.env.VITE_API_BASE_URL || 
+      (typeof window !== 'undefined' && window.location && window.location.port === '5177' ? 'http://localhost:5174' : '')
     let usePolling = false
     let src
     try {
@@ -128,9 +130,16 @@ export default function App() {
   const [url, setUrl] = useState('')
   const [status, setStatus] = useState('')
   const [result, setResult] = useState(null)
-  const apiBase = (typeof window !== 'undefined' && window.location && window.location.port === '5177')
-    ? 'http://localhost:5174'
-    : ''
+  // In dev: use proxy, in prod: use env var
+  const apiBase = import.meta.env.VITE_API_BASE_URL || 
+    (typeof window !== 'undefined' && window.location && window.location.port === '5177' ? 'http://localhost:5174' : 'https://backend-3n4m.onrender.com')
+  
+  // Debug: Log the environment variable
+  console.log('VITE_API_BASE_URL:', import.meta.env.VITE_API_BASE_URL)
+  console.log('apiBase:', apiBase)
+  console.log('Current URL:', window.location.href)
+  console.log('Using fallback backend URL:', apiBase)
+  
   const [busy, setBusy] = useState(false)
   const [elapsedMs, setElapsedMs] = useState(0)
   const timerRef = React.useRef(null)
@@ -181,7 +190,7 @@ export default function App() {
     try {
       const id = cryptoRandomId()
       setProgressId(id)
-      const resp = await fetch('/api/download', {
+      const resp = await fetch(`${apiBase}/api/download`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url, progressId: id }),
@@ -261,7 +270,7 @@ export default function App() {
                         try {
                           const id = cryptoRandomId()
                           setProgressId(id)
-                          const resp = await fetch('/api/download-mp3', {
+                          const resp = await fetch(`${apiBase}/api/download-mp3`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ url, bitrate: 192, progressId: id }),
@@ -371,5 +380,6 @@ export default function App() {
     </BrowserRouter>
   )
 }
+
 
 
