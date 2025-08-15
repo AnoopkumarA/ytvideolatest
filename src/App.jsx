@@ -226,7 +226,7 @@ export default function App() {
             <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-amber-400 text-white shadow shadow-amber-300/40">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5"><path d="M7.5 6.75l9 4.5-9 4.5v-9z"/></svg>
             </span>
-            <span className="font-semibold tracking-tight">TubeBee</span>
+            <span className="font-semibold tracking-tight">TubeBees</span>
           </Link>
           <div className="flex items-center gap-1 text-sm">
             <Link to="/" className="nav-link">Home</Link>
